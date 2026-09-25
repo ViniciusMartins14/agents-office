@@ -1,0 +1,10 @@
+.office/
+.env
+.env.*
+.DS_Store
+node_modules/
+.openai/
+.codex/
+.agents/
+*.blend1
+blender/*.png

@@ -1,0 +1,14 @@
+{
+  "name": "dev-office",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node --env-file-if-exists=.env server.mjs",
+    "test": "node --test test/*.test.mjs",
+    "check": "node --check server.mjs && node --check spotify.mjs && node --check music-dj.mjs && node --check usage.mjs && node --check planner.mjs && node --check agent-run.mjs && node --check dist/app.js && node --check dist/spotify-radio.js && node --check dist/office3d.js && node --check dist/office-motion.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
