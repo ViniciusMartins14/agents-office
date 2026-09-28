@@ -6,9 +6,12 @@
   "scripts": {
     "start": "node --env-file-if-exists=.env server.mjs",
     "test": "node --test test/*.test.mjs",
-    "check": "node --check server.mjs && node --check spotify.mjs && node --check music-dj.mjs && node --check usage.mjs && node --check planner.mjs && node --check agent-run.mjs && node --check dist/app.js && node --check dist/spotify-radio.js && node --check dist/office3d.js && node --check dist/office-motion.js"
+    "check": "node --check server.mjs && node --check spotify.mjs && node --check music-dj.mjs && node --check usage.mjs && node --check planner.mjs && node --check agent-run.mjs && node --check process-spawn.mjs && node --check skills.mjs && node --check ai-memory.mjs && node --check mcps.mjs && node --check dependencies.mjs && node --check dist/app.js && node --check dist/spotify-radio.js && node --check dist/office3d.js && node --check dist/office-motion.js"
   },
   "engines": {
     "node": ">=20"
+  },
+  "dependencies": {
+    "node-pty": "^1.1.0"
   }
 }

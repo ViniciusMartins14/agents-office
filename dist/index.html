@@ -7,7 +7,7 @@
   <link rel="icon" href="/favicon.svg" type="image/svg+xml"><link rel="stylesheet" href="/styles.css">
   <script src="/app.js" type="module"></script>
 </head>
-<body>
+<body class="office-mode">
   <aside class="sidebar">
     <a class="brand" href="/" aria-label="Dev Office início"><span class="brand-mark">⌘</span><span>dev<span class="brand-light">office</span><small>SOFTWARE STUDIO</small></span></a>
     <div class="workspace-pill"><span class="workspace-icon">V</span><div>Meu escritório<small>Ambiente local</small></div><span class="connection-dot"></span></div>
@@ -16,6 +16,7 @@
       <button class="nav-item active" data-view="office"><span>▦</span> Escritório <span class="key">01</span></button>
       <button class="nav-item" data-view="tasks"><span>☷</span> Missões <span class="count" id="mission-count">0</span></button>
       <button class="nav-item" data-view="team"><span>♧</span> Equipe</button>
+      <button class="nav-item" data-view="tools"><span>⌁</span> Ferramentas</button>
       <button class="nav-item" data-action="settings"><span>⚙</span> Configurações</button>
     </nav>
     <div class="sidebar-bottom"><div class="terminal-title">SEUS TERMINAIS <span>↗</span></div><div id="provider-list"></div><div class="user-profile"><span class="user-avatar">EU</span><div>Você<small>Diretor do escritório</small></div></div></div>
@@ -28,6 +29,7 @@
         <section class="stage" id="stage" aria-label="Escritório em 3D">
           <canvas id="office-canvas" tabindex="0" aria-label="Cena 3D do escritório com seis estações de trabalho. Arraste para girar, use a roda para aproximar. Pelo teclado: setas giram, mais e menos aproximam, zero restaura a câmera."></canvas>
           <button class="scene-settings" data-action="settings" aria-label="Configurações do escritório" title="Configurações">⚙</button>
+          <nav class="scene-nav" aria-label="Abrir painéis do escritório"><button data-view="tasks"><span>☷</span> Missões</button><button data-view="team"><span>♧</span> Equipe</button><button data-view="tools"><span>⌁</span> Ferramentas</button></nav>
           <div id="office-overlay" class="scene-tags"></div>
           <div class="hud hud-top">
             <div class="hud-brand"><span class="live-dot"></span>DEV OFFICE<small>ANDAR 01</small></div>
@@ -68,10 +70,11 @@
       </div>
       <section id="tasks-view" class="view" hidden><div class="section-heading"><h2>Missões do escritório</h2><button class="text-button" id="export-all">↓ Exportar histórico</button></div><div id="office-briefing" class="office-briefing"></div><div id="mission-list"></div></section>
       <section id="team-view" class="view" hidden><div class="section-heading"><h2>Funcionários & responsabilidades</h2><button class="button" data-action="settings">Configurar terminais</button></div><div id="team-details" class="team-details"></div></section>
+      <section id="tools-view" class="view tools-view" hidden><div class="capability-overview" id="capability-overview" aria-live="polite"></div><section class="tool-section"><div class="section-heading"><div><h2>Ferramentas e serviços</h2><span>O Office detecta; você decide quando instalar ou autenticar.</span></div><button class="button" id="dependencies-refresh">Atualizar diagnóstico</button></div><div id="dependencies-summary" class="dependencies-summary" aria-live="polite"></div><div id="dependencies-list" class="dependencies-list"></div><p class="tools-safety">Nenhum botão desta tela executa instaladores. Os comandos são copiados para você revisar e executar em um terminal apropriado.</p></section><section class="tool-section mcp-section"><div class="section-heading"><div><h2>MCPs compartilhados</h2><span>Cadastre uma vez e aplique no Claude, Codex e IBM Bob.</span></div><button class="button primary" id="mcp-add">＋ Adicionar MCP</button></div><div id="mcp-list" class="mcp-list" aria-live="polite"></div><p class="tools-safety">Aplicar altera somente a configuração MCP do seu usuário. Remover daqui não apaga configurações já aplicadas nos produtos.</p></section><section class="tool-section skills-section"><div class="section-heading"><div><h2>Skills da equipe</h2><span>Metodologias disponíveis para qualquer agente e missão.</span></div><span class="section-count" id="skills-count"></span></div><div id="skills-catalog" class="skills-catalog"></div></section></section>
       <footer>Construído para trabalhar junto.<span id="workspace-footer">Escolha uma pasta de projeto para começar.</span></footer>
     </main>
   </div>
-  <dialog id="mission-dialog"><form id="mission-form"><div class="dialog-heading"><div><span class="eyebrow">PRÓXIMA CONSTRUÇÃO</span><h2>Uma nova missão</h2></div><button type="button" class="icon-button" data-close="mission-dialog" aria-label="Fechar">×</button></div><label for="mission-employee">Quem vai cuidar disso?</label><select id="mission-employee"><option value="team">Toda a equipe · planejamento até entrega</option></select><label for="mission-prompt">O que você quer desenvolver?</label><textarea id="mission-prompt" required minlength="5" maxlength="20000" rows="6" placeholder="Ex.: crie um aplicativo de tarefas com login, projetos e um quadro Kanban. Use o stack existente e inclua testes dos fluxos principais."></textarea><div class="form-hint" id="mission-folder"></div><div class="workflow-preview">PLANEJAR <span>→</span> PROJETAR <span>→</span> IMPLEMENTAR <span>→</span> TESTAR <span>→</span> REVISAR</div><p class="form-hint">A execução usa suas sessões dos terminais e pode alterar arquivos da pasta escolhida. Etapas são executadas em sequência.</p><p class="form-error" id="mission-error" role="alert"></p><div class="dialog-actions"><button type="button" class="button" data-close="mission-dialog">Cancelar</button><button class="button primary" type="submit">Iniciar missão ↗</button></div></form></dialog>
+  <dialog id="mission-dialog"><form id="mission-form"><div class="dialog-heading"><div><span class="eyebrow">PRÓXIMA CONSTRUÇÃO</span><h2>Uma nova missão</h2></div><button type="button" class="icon-button" data-close="mission-dialog" aria-label="Fechar">×</button></div><label for="mission-employee">Quem vai cuidar disso?</label><select id="mission-employee"><option value="team">Toda a equipe · planejamento até entrega</option></select><label for="mission-prompt">O que você quer desenvolver?</label><textarea id="mission-prompt" required minlength="5" maxlength="20000" rows="6" placeholder="Ex.: crie um aplicativo de tarefas com login, projetos e um quadro Kanban. Use o stack existente e inclua testes dos fluxos principais."></textarea><fieldset class="mission-skills" id="mission-skills"><legend>Skills para esta missão <small>opcional · máximo 4</small></legend><div id="mission-skill-options"></div><p class="form-hint">As skills refinam o método de trabalho; elas não ampliam o escopo nem autorizam publicação.</p></fieldset><div class="form-hint" id="mission-folder"></div><div class="workflow-preview">PLANEJAR <span>→</span> PROJETAR <span>→</span> IMPLEMENTAR <span>→</span> TESTAR <span>→</span> REVISAR</div><p class="form-hint">A execução usa suas sessões dos terminais e pode alterar arquivos da pasta escolhida. Etapas são executadas em sequência.</p><p class="form-error" id="mission-error" role="alert"></p><div class="dialog-actions"><button type="button" class="button" data-close="mission-dialog">Cancelar</button><button class="button primary" type="submit">Iniciar missão ↗</button></div></form></dialog>
   <dialog id="settings-dialog" class="wide-dialog settings-dialog"><form id="settings-form"><div class="dialog-heading"><div><span class="eyebrow">SEU AMBIENTE</span><h2>Configurar escritório</h2></div><button type="button" class="icon-button" data-close="settings-dialog" aria-label="Fechar">×</button></div><label for="workspace-path">Pasta do projeto</label><input id="workspace-path" required placeholder="/Users/seu-nome/projetos/meu-app" autocomplete="off"><p class="form-hint">Use uma pasta existente. Todos os funcionários trabalharão nela, um de cada vez.</p><div id="assignment-fields"></div><label class="toggle-row" for="standup-toggle"><input type="checkbox" id="standup-toggle"><span>Alinhamento automático ao fim de cada missão<small>Quem trabalhou na missão e ainda tem saldo conversa para registrar o que o resto do escritório precisa saber. Cada participante gasta uma chamada do terminal dele.</small></span></label><section class="agent-usage-section" aria-labelledby="agent-usage-title"><div class="agent-usage-heading"><div><h3 id="agent-usage-title">Limites da equipe</h3><p>Funcionários ligados ao mesmo terminal compartilham o limite da conta. Planos por assinatura mostram porcentagem de uso, não uma quantidade fixa de tokens.</p></div><button id="usage-refresh" class="button" type="button">Atualizar limites</button></div><div id="agent-usage" class="agent-usage" aria-live="polite"><p class="form-hint">Consultando limites…</p></div></section><p class="form-hint">Claude, Codex e IBM Bob usam a autenticação que você já configurou no terminal. Se houver um pedido de login ou permissão, resolva no terminal e retome a etapa.</p><p class="form-error" id="settings-error" role="alert"></p><div class="dialog-actions"><button type="button" class="button" data-close="settings-dialog">Cancelar</button><button class="button primary" type="submit">Salvar configurações</button></div></form></dialog>
   <dialog id="meeting-dialog" class="meeting-dialog">
     <div class="meeting-heading"><div><span class="eyebrow">MESA DE REUNIÃO</span><h2>Reunião da equipe</h2><p>Escolha quem participa. Cada funcionário recebe a resposta do anterior e continua a discussão.</p></div><button type="button" class="icon-button" data-close="meeting-dialog" aria-label="Fechar">×</button></div>
@@ -80,6 +83,7 @@
       <fieldset><legend>Participantes</legend><div id="meeting-participants" class="meeting-participants"></div></fieldset>
       <label for="meeting-prompt">Pauta ou demanda</label>
       <textarea id="meeting-prompt" required minlength="5" maxlength="20000" rows="4" placeholder="Ex.: discutam a melhor arquitetura para esta funcionalidade e terminem com um plano de execução."></textarea>
+      <details class="inline-skills"><summary>Skills da reunião <span>opcional</span></summary><div id="meeting-skill-options" class="compact-skill-options"></div></details>
       <p class="form-error" id="meeting-error" role="alert"></p>
       <div class="dialog-actions"><button class="button" type="button" id="leave-meeting">Encerrar reunião</button><button class="button" type="button" id="close-meeting">Encerrar e montar o plano</button><button class="button primary" type="submit">Sentar e iniciar reunião</button></div>
     </form>
@@ -105,6 +109,7 @@
       <button class="chat-attach" type="button" id="attach-files" aria-label="Adicionar arquivos" title="Adicionar contexto">＋</button>
       <textarea id="employee-message" maxlength="20000" rows="2" placeholder="Escreva uma mensagem ou envie arquivos…"></textarea>
       <button class="chat-send" type="submit" aria-label="Enviar mensagem">➤</button>
+      <details class="inline-skills chat-inline-skills"><summary>Skills <span>opcional</span></summary><div id="chat-skill-options" class="compact-skill-options"></div></details>
       <div id="attachment-drafts" class="attachment-drafts" aria-live="polite"></div>
       <p class="form-error" id="employee-chat-error" role="alert"></p>
       <p class="chat-hint">Enter para enviar · Shift + Enter para quebrar linha · até 5 arquivos</p>
@@ -131,6 +136,27 @@
       <button type="button" class="text-button" data-spotify-action="disconnect">Desconectar Spotify</button>
     </section>
     <p id="spotify-error" class="form-error" role="alert"></p>
+  </dialog>
+  <dialog id="mcp-dialog" class="mcp-dialog" aria-labelledby="mcp-dialog-title">
+    <form id="mcp-form">
+      <div class="dialog-heading"><div><span class="eyebrow">MODEL CONTEXT PROTOCOL</span><h2 id="mcp-dialog-title">Adicionar MCP</h2><p>O mesmo cadastro pode ser traduzido para cada terminal.</p></div><button type="button" class="icon-button" data-close="mcp-dialog" aria-label="Fechar">×</button></div>
+      <div class="mcp-mode" role="group" aria-label="Modo de configuração"><button type="button" class="active" data-mcp-mode="form" aria-pressed="true">Formulário</button><button type="button" data-mcp-mode="json" aria-pressed="false">JSON avançado</button></div>
+      <div id="mcp-form-fields">
+        <label for="mcp-name">Nome</label><input id="mcp-name" required maxlength="63" pattern="[A-Za-z0-9][A-Za-z0-9_-]*" placeholder="ex.: meu-servidor">
+        <label for="mcp-transport">Transporte</label><select id="mcp-transport"><option value="http">HTTP / Streamable HTTP</option><option value="stdio">STDIO (comando local)</option></select>
+        <div id="mcp-http-fields"><label for="mcp-url">URL</label><input id="mcp-url" type="url" placeholder="https://servidor.exemplo/mcp"><p class="form-hint">HTTP sem TLS é aceito somente em 127.0.0.1 ou localhost.</p></div>
+        <div id="mcp-stdio-fields" hidden><label for="mcp-command">Comando</label><input id="mcp-command" placeholder="ex.: npx"><label for="mcp-args">Argumentos, um por linha</label><textarea id="mcp-args" rows="4" placeholder="-y&#10;@empresa/servidor-mcp"></textarea></div>
+      </div>
+      <div id="mcp-json-fields" hidden>
+        <div class="mcp-json-heading"><label for="mcp-json">Configuração JSON</label><button type="button" class="text-button" id="mcp-json-example">Usar exemplo OpenSearch</button></div>
+        <textarea id="mcp-json" class="mcp-json-editor" rows="14" spellcheck="false" placeholder='{"mcpServers":{"opensearch":{"command":"uvx","args":["opensearch-mcp-server-py"],"env":{"OPENSEARCH_URL":"https://..."}}}}'></textarea>
+        <p class="form-hint">Aceita um objeto com <code>name</code>, um bloco <code>mcpServers</code> ou <code>servers</code>. É possível importar até 20 servidores de uma vez.</p>
+        <p id="mcp-json-status" class="mcp-json-status" aria-live="polite">Cole um JSON para validar.</p>
+      </div>
+      <fieldset class="mcp-targets"><legend>Configurar em</legend><label><input type="checkbox" name="mcp-target" value="claude" checked> Claude</label><label><input type="checkbox" name="mcp-target" value="codex" checked> Codex</label><label><input type="checkbox" name="mcp-target" value="bob" checked> IBM Bob</label></fieldset>
+      <p class="tools-safety">Evite chaves, tokens e senhas literais. Prefira referências como <code>${OPEN_SEARCH_PASSWORD}</code>, <code>${env:OPEN_SEARCH_PASSWORD}</code> ou <code>bearer_token_env_var</code>, conforme a ferramenta.</p>
+      <p class="form-error" id="mcp-error" role="alert"></p><div class="dialog-actions"><button type="button" class="button" data-close="mcp-dialog">Cancelar</button><button type="submit" class="button primary" id="mcp-save">Salvar no catálogo</button></div>
+    </form>
   </dialog>
   <div id="toast" role="status" class="toast" hidden></div>
 </body>

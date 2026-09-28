@@ -8,10 +8,16 @@ import { employees, commandFor, buildPrompt, decodeLine, compact, briefingText, 
 import { Spotify } from './spotify.mjs';
 import { chooseMusic } from './music-dj.mjs';
 import { buildPlan, parsePlan } from './planner.mjs';
-import {eventUsage,limitsFromUsage,readClaudeUsage,readCodexUsage} from './usage.mjs';
+import {eventUsage,limitsFromUsage,readClaudeUsage,readCodexUsage,readUsagebar} from './usage.mjs';
+import {spawnTarget} from './process-spawn.mjs';
+import { SkillCatalog } from './skills.mjs';
+import { AiMemory } from './ai-memory.mjs';
+import { inspectDependencies } from './dependencies.mjs';
+import { McpRegistry } from './mcps.mjs';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const dataDir = process.env.OFFICE_DATA_DIR || path.join(root, '.office');
+const skillsDir = process.env.OFFICE_SKILLS_DIR ? path.resolve(process.env.OFFICE_SKILLS_DIR) : path.join(root, 'skills');
 const port = Number(process.env.PORT || 4317);
 const token = randomBytes(32).toString('hex');
 const spotify = new Spotify({dataDir, port});
@@ -19,11 +25,18 @@ await spotify.init();
 let musicRevision=0, musicChoice=null, djAbort=null;
 let usageCache=null,usageReading=null,usageLimits={};
 let planning=false;
+const skillCatalog = new SkillCatalog(skillsDir);
+const mcpRegistry = new McpRegistry(path.join(dataDir, 'mcps.json'));
+let projectMemory = null;
+let availableSkills = await skillCatalog.list();
+let dependencyReport = { platform: process.platform, arch: process.arch, checkedAt: null, items: [] };
 const running = new Map();
 const clients = new Set();
 let binaries = {};
 let closing = false;
 await fs.mkdir(dataDir, { recursive: true, mode: 0o700 });
+await mcpRegistry.load();
+await mcpRegistry.ensure({ name: 'ai-memory', transport: 'http', url: 'http://127.0.0.1:49375/mcp', targets: ['claude', 'codex', 'bob'] });
 let state = { workspace: '', assignments: Object.fromEntries(employees.map(e => [e.id, e.provider])), tasks: [], paused: false, briefing: [], standup: true, finished: [], finishing: [] };
 try { state = { ...state, ...JSON.parse(await fs.readFile(path.join(dataDir, 'state.json'), 'utf8')) }; }
 catch (error) { if (error.code !== 'ENOENT') throw new Error(`Não foi possível ler o histórico: ${error.message}`); }
@@ -69,18 +82,38 @@ function save() {
   });
   return saving;
 }
-function publicState() { return { ...state, employees, binaries: Object.fromEntries(Object.entries(binaries).map(([key, value]) => [key, !!value])), readiness: { bob: !!process.env.BOB_API_KEY }, limits: usageLimits, local: true }; }
+function publicState() { return { ...state, employees, skills: availableSkills, dependencies: dependencyReport, mcps: mcpRegistry.publicState(), binaries: Object.fromEntries(Object.entries(binaries).map(([key, value]) => [key, !!value])), readiness: { bob: !!process.env.BOB_API_KEY }, memory: { provider: 'ai-memory', active: !!projectMemory?.ready, endpoint: 'http://127.0.0.1:49375/mcp', dataDirectory: path.join(dataDir, 'ai-memory') }, limits: usageLimits, local: true }; }
 function broadcast() { const data = `data: ${JSON.stringify(publicState())}\n\n`; for (const client of clients) client.write(data); }
 async function changed() { await save(); broadcast(); }
 async function locate(name) {
+  const names = process.platform === 'win32' ? [`${name}.exe`, name] : [name];
   for (const dir of (process.env.PATH || '').split(path.delimiter)) {
-    const candidate = path.join(dir, name);
-    try { await fs.access(candidate, constants.X_OK); return candidate; } catch {}
+    for (const filename of names) {
+      const candidate = path.join(dir, filename);
+      try { await fs.access(candidate, constants.X_OK); return candidate; } catch {}
+    }
+    /* npm expõe .cmd no PATH do Windows, mas spawn(shell:false) não executa scripts de cmd. Preferimos o
+       binário nativo instalado pelo pacote para preservar argumentos como dados e evitar um shell. */
+    if (process.platform === 'win32') {
+      const target = process.arch === 'arm64' ? 'aarch64-pc-windows-msvc' : 'x86_64-pc-windows-msvc';
+      const native = name === 'claude'
+        ? path.join(dir, 'node_modules', '@anthropic-ai', 'claude-code', 'bin', 'claude.exe')
+        : name === 'codex'
+          ? path.join(dir, 'node_modules', '@openai', 'codex', 'node_modules', '@openai', `codex-win32-${process.arch}`, 'vendor', target, 'bin', 'codex.exe')
+          : null;
+      if (native) try { await fs.access(native, constants.X_OK); return native; } catch {}
+    }
   }
   return null;
 }
-async function refreshBinaries() { binaries = Object.fromEntries(await Promise.all(['claude', 'codex', 'bob'].map(async name => [name, await locate(name)]))); }
+async function refreshBinaries() {
+  binaries = Object.fromEntries(await Promise.all(['claude', 'codex', 'bob', 'ai-usagebar', 'ai-memory'].map(async name => [name, await locate(name)])));
+  dependencyReport = await inspectDependencies({ knownBinaries: binaries });
+}
 await refreshBinaries();
+projectMemory = new AiMemory({ binary: binaries['ai-memory'], dataDirectory: path.join(dataDir, 'ai-memory') });
+try { await projectMemory.start(); }
+catch (error) { console.error(`ai-memory indisponível: ${error.message}`); }
 await save();
 
 /* O /usage do Claude abre um terminal interativo, então a consulta é compartilhada: pedidos simultâneos
@@ -89,6 +122,14 @@ function readUsage(force = false) {
   if (!force && usageCache && Date.now() - usageCache.at < 60_000) return Promise.resolve(usageCache.providers);
   if (usageReading) return usageReading;
   usageReading = (async () => {
+    if (binaries['ai-usagebar']) {
+      try {
+        const providers = { ...await readUsagebar(binaries['ai-usagebar']), bob: { available: false, message: 'O IBM Bob CLI não informa um saldo restante em tokens.' } };
+        usageCache = { at: Date.now(), providers };
+        usageLimits = limitsFromUsage(providers);
+        return providers;
+      } catch {}
+    }
     const [claudeResult, codexResult] = await Promise.allSettled([readClaudeUsage(binaries.claude), readCodexUsage(binaries.codex)]);
     const providers = {
       claude: claudeResult.status === 'fulfilled' ? claudeResult.value : { available: false, message: claudeResult.reason?.message || 'Não foi possível consultar /usage.' },
@@ -244,9 +285,24 @@ async function pump() {
   const previous = task.chat
     ? state.tasks.filter(t => t.chat && t.employee === task.employee && t.id !== task.id && t.status === 'done').slice(-8)
     : state.tasks.filter(t => (t.mission === task.mission || (task.about && t.mission === task.about)) && t.status === 'done');
-  const command = commandFor(task.provider, task.workspace, buildPrompt(task, employee, previous, state.briefing));
+  let extensions;
+  try {
+    const memoryMissions = [...new Set(state.tasks
+      .filter(item => item.workspace === task.workspace && item.status === 'done' && item.mission !== task.mission)
+      .map(item => item.mission).filter(Boolean))].reverse().slice(0, 3);
+    const [skills, projectMemoryText] = await Promise.all([
+      skillCatalog.prompt(task.skills),
+      projectMemory.recent(task.workspace, memoryMissions)
+    ]);
+    extensions = { skills, projectMemory: projectMemoryText };
+  } catch (error) {
+    task.status = 'failed'; task.output = `Não foi possível preparar o contexto da missão: ${error.message}`;
+    holdPipeline(task); await changed(); return pump();
+  }
+  const command = commandFor(task.provider, task.workspace, buildPrompt(task, employee, previous, state.briefing, extensions));
+  const target = spawnTarget(binaries[task.provider], command.args);
   task.status = 'running'; task.startedAt = new Date().toISOString(); task.output = ''; task.result = '';
-  const child = spawn(binaries[task.provider], command.args, { cwd: task.workspace, shell: false, detached: true, env: { ...process.env, NO_COLOR: '1' }, stdio: ['pipe', 'pipe', 'pipe'] });
+  const child = spawn(target.binary, target.args, { cwd: task.workspace, shell: false, detached: true, env: { ...process.env, NO_COLOR: '1' }, stdio: ['pipe', 'pipe', 'pipe'] });
   const entry = { child, failed: false, blocked: false, killTimer: null };
   running.set(task.id, entry);
   const buffers = { stdout: '', stderr: '' };
@@ -294,6 +350,8 @@ async function pump() {
     if (task.status !== 'done') holdPipeline(task);
     running.delete(task.id);
     if (task.status === 'done') remember(task, task.standup ? 'conversa' : 'entrega');
+    try { await projectMemory.recordMission(task.workspace, task.mission, state.tasks.filter(item => item.mission === task.mission)); }
+    catch (error) { console.error(`Não foi possível atualizar a memória do projeto: ${error.message}`); }
     void refreshUsage(true);
     try { if (!queueAskedAlignment(task) && !settleFinish()) queueStandup(task.mission); await changed(); await pump(); } catch (error) { console.error(error); }
   });
@@ -379,6 +437,31 @@ const server = http.createServer(async (req, res) => {
         const agents=employees.map(employee=>({id:employee.id,consumedTokens:state.tasks.filter(task=>task.employee===employee.id).reduce((sum,task)=>sum+(task.usage?.totalTokens||0),0)}));
         return respond(res,200,{providers,limits:usageLimits,agents,updatedAt:new Date(usageCache?.at||Date.now()).toISOString()});
       }
+      if(url.pathname==='/api/dependencies'){
+        await refreshBinaries();
+        broadcast();
+        return respond(res,200,dependencyReport);
+      }
+      if(url.pathname==='/api/mcps/save'){
+        await mcpRegistry.upsert(data.server);
+        broadcast();
+        return respond(res,200,{mcps:mcpRegistry.publicState()});
+      }
+      if(url.pathname==='/api/mcps/import'){
+        const servers=await mcpRegistry.import(data.json,data.targets);
+        broadcast();
+        return respond(res,200,{imported:servers.map(server=>server.name),mcps:mcpRegistry.publicState()});
+      }
+      if(url.pathname==='/api/mcps/apply'){
+        const results=await mcpRegistry.apply(data.name,binaries,state.workspace||root);
+        broadcast();
+        return respond(res,200,{results,mcps:mcpRegistry.publicState()});
+      }
+      if(url.pathname==='/api/mcps/remove'){
+        await mcpRegistry.remove(data.name);
+        broadcast();
+        return respond(res,200,{mcps:mcpRegistry.publicState()});
+      }
       /* Sair da mesa sem plano: a conversa fica no histórico, e todo mundo volta para a mesa de trabalho. */
       if (url.pathname === '/api/meeting/close') {
         const round = state.tasks.filter(t => t.meeting && (t.round || t.mission) === data.round);
@@ -413,7 +496,8 @@ const server = http.createServer(async (req, res) => {
         try {
           const plan = await buildPlan({ manager, provider, binary: binaries[provider], demand, transcript });
           /* A conversa vai junto: sem ela, quem executa começaria sem saber o que já foi decidido. */
-          return respond(res, 200, { mission: data.mission || null, employee: fromChat ? data.employee : null, background: transcript.slice(-12000), plan });
+          const skills = [...new Set(source.flatMap(task => Array.isArray(task.skills) ? task.skills : []))];
+          return respond(res, 200, { mission: data.mission || null, employee: fromChat ? data.employee : null, background: transcript.slice(-12000), skills, plan });
         } finally { planning = false; }
       }
       if (url.pathname === '/api/plan/confirm') {
@@ -423,6 +507,7 @@ const server = http.createServer(async (req, res) => {
         /* Reunião distribui dentro da própria demanda; conversa abre uma demanda nova carregando o combinado. */
         const target = data.mission || randomUUID();
         const background = typeof data.background === 'string' ? data.background.slice(0, 12000) : '';
+        const selectedSkills = (await skillCatalog.select(data.skills)).map(skill => skill.id);
         const plan = parsePlan(data.plan);
         const workspace = await directory(state.workspace);
         const people = [...new Set([...plan.etapas.map(step => step.employee), ...plan.alinhamentos.flatMap(item => item.participantes)])];
@@ -440,10 +525,12 @@ const server = http.createServer(async (req, res) => {
           const depends = (step || alignment).depende.flatMap(dep => created.get(dep) || []);
           if (step) {
             const employee = employees.find(e => e.id === step.employee);
-            const task = { id: randomUUID(), mission: target, background, employee: employee.id, role: employee.role, name: employee.name, provider: state.assignments[employee.id], workspace, prompt: step.tarefa, attachments: [], chat: false, meeting: false, plan: true, planItem: id, depends, status: 'queued', output: '', result: '', createdAt: new Date().toISOString() };
+            const task = { id: randomUUID(), mission: target, background, employee: employee.id, role: employee.role, name: employee.name, provider: state.assignments[employee.id], workspace, prompt: step.tarefa, skills: selectedSkills, attachments: [], chat: false, meeting: false, plan: true, planItem: id, depends, status: 'queued', output: '', result: '', createdAt: new Date().toISOString() };
             state.tasks.push(task); created.set(id, [task.id]);
           } else {
-            created.set(id, meetingTasks({ mission: target, background, round: randomUUID(), people: alignment.participantes, pauta: alignment.pauta, workspace, depends, asked: false }));
+            const ids = meetingTasks({ mission: target, background, round: randomUUID(), people: alignment.participantes, pauta: alignment.pauta, workspace, depends, asked: false });
+            for (const taskId of ids) state.tasks.find(task => task.id === taskId).skills = selectedSkills;
+            created.set(id, ids);
           }
         }
         await changed(); void pump().catch(console.error);
@@ -502,6 +589,7 @@ const server = http.createServer(async (req, res) => {
       } else if (url.pathname === '/api/missions') {
         if (typeof data.prompt !== 'string' || data.prompt.trim().length < 5 || data.prompt.length > 20000) throw new Error('Descreva a tarefa em 5 a 20.000 caracteres.');
         const workspace = await directory(state.workspace);
+        const selectedSkills = (await skillCatalog.select(data.skills)).map(skill => skill.id);
         const meetingIds = Array.isArray(data.participants) ? [...new Set(data.participants)] : null;
         if (meetingIds && (meetingIds.length < 2 || meetingIds.length > 6)) throw new Error('Escolha de 2 a 6 participantes para a reunião.');
         const selected = meetingIds ? meetingIds.map(id => employees.find(e => e.id === id)).filter(Boolean) : data.employee === 'team' ? employees : employees.filter(e => e.id === data.employee);
@@ -514,7 +602,7 @@ const server = http.createServer(async (req, res) => {
         const mission = randomUUID();
         const round = randomUUID();
         const attachments = await storeAttachments(data.attachments, mission);
-        for (const e of selected) state.tasks.push({ id: randomUUID(), mission, employee: e.id, role: e.role, name: e.name, provider: state.assignments[e.id], workspace, prompt: data.prompt.trim(), attachments, chat: !meetingIds && data.employee !== 'team', meeting: !!meetingIds, round: meetingIds ? round : undefined, participants: meetingIds || undefined, status: 'queued', output: '', result: '', createdAt: new Date().toISOString() });
+        for (const e of selected) state.tasks.push({ id: randomUUID(), mission, employee: e.id, role: e.role, name: e.name, provider: state.assignments[e.id], workspace, prompt: data.prompt.trim(), skills: selectedSkills, attachments, chat: !meetingIds && data.employee !== 'team', meeting: !!meetingIds, round: meetingIds ? round : undefined, participants: meetingIds || undefined, status: 'queued', output: '', result: '', createdAt: new Date().toISOString() });
         await changed(); void pump().catch(console.error);
       } else if (url.pathname === '/api/pause') {
         state.paused = !!data.paused; await changed(); void pump().catch(console.error);
@@ -596,6 +684,7 @@ const server = http.createServer(async (req, res) => {
         /* Apagar é sem rastro: sai do histórico, sai do mural e leva os anexos junto. */
         state.briefing = state.briefing.filter(entry => entry.mission !== mission);
         await fs.rm(path.join(dataDir, 'uploads', mission), { recursive: true, force: true });
+        await projectMemory.removeMission(tasks[0].workspace, mission);
         await changed();
       } else if (url.pathname === '/api/archive') {
         const tasks = state.tasks.filter(t => t.mission === data.mission);
@@ -641,7 +730,7 @@ async function shutdown() {
   djAbort?.abort();
   for (const task of state.tasks.filter(t => t.status === 'running')) stopProcess(task, 'interrupted');
   for (const task of state.tasks.filter(t => t.status === 'queued')) task.status = 'interrupted';
-  await save(); for (const client of clients) client.end(); server.close();
+  await save(); await projectMemory?.stop(); for (const client of clients) client.end(); server.close();
   setTimeout(() => { for (const { child } of running.values()) killGroup(child, 'SIGKILL'); process.exit(0); }, 3000);
 }
 process.on('SIGINT', shutdown); process.on('SIGTERM', shutdown);

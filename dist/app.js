@@ -15,7 +15,10 @@ let office3d = null;
 let spotifyPlayback = {on:false,dj:'Spotify',title:'Abrir rádio'};
 let spotifyBooted=false;
 let agentUsage=null,usageLoading=false;
-let planDraft=null,planMission=null,planEmployee=null,planBackground='';
+let dependenciesLoading=false;
+let mcpApplying='';
+let mcpEditing='',mcpPendingDelete='',mcpMode='form';
+let planDraft=null,planMission=null,planEmployee=null,planBackground='',planSkills=[];
 let pendingDelete=null,pendingDeleteTimer;
 const esc = text => String(text ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 function markdownInline(text) {
@@ -127,13 +130,106 @@ async function api(endpoint, data) {
   state = result; render(); return result;
 }
 function switchView(view) {
-  for (const name of ['office', 'tasks', 'team']) $(`${name}-view`).hidden = name !== view;
+  document.body.classList.toggle('office-mode',view==='office');
+  for (const name of ['office', 'tasks', 'team', 'tools']) $(`${name}-view`).hidden = name !== view;
   document.querySelectorAll('[data-view]').forEach(button => button.classList.toggle('active', button.dataset.view === view));
   $('page-heading').hidden = view === 'office';
-  $('breadcrumb').textContent = { office: 'Escritório', tasks: 'Missões', team: 'Equipe' }[view];
-  $('page-title').textContent = { office: 'Seu time, no mesmo lugar.', tasks: 'Da ideia à entrega.', team: 'Um time feito para construir.' }[view];
-  $('page-description').textContent = { office: 'Dê uma missão. Acompanhe cada etapa. Construa com a sua equipe.', tasks: 'Planejamento, implementação e validação em uma única sequência.', team: 'Seis especialidades, conectadas aos seus terminais.' }[view];
+  $('page-heading').querySelector('[data-action="mission"]').hidden = view === 'tools';
+  $('breadcrumb').textContent = { office: 'Escritório', tasks: 'Missões', team: 'Equipe', tools: 'Ferramentas' }[view];
+  $('page-title').textContent = { office: 'Seu time, no mesmo lugar.', tasks: 'Da ideia à entrega.', team: 'Um time feito para construir.', tools: 'Seu ambiente, sem pontos cegos.' }[view];
+  $('page-description').textContent = { office: 'Dê uma missão. Acompanhe cada etapa. Construa com a sua equipe.', tasks: 'Planejamento, implementação e validação em uma única sequência.', team: 'Seis especialidades, conectadas aos seus terminais.', tools: 'Instalação, autenticação e compatibilidade de cada serviço usado pelo escritório.' }[view];
   office3d?.setActive(view === 'office');
+}
+
+const dependencyStatus = {
+  ready: ['Pronto', 'ready'], auth_required: ['Autenticação pendente', 'attention'],
+  missing: ['Não instalado', 'missing'], unsupported: ['Requer ambiente compatível', 'unsupported']
+};
+function renderDependencies(){
+  const report=state.dependencies||{items:[]};
+  const items=Array.isArray(report.items)?report.items:[];
+  const ready=items.filter(item=>item.status==='ready').length;
+  const attention=items.length-ready;
+  $('dependencies-summary').innerHTML=dependenciesLoading
+    ? '<span>Consultando ferramentas instaladas…</span>'
+    : `<span><strong>${ready}</strong> disponíveis</span><span><strong>${attention}</strong> precisam de atenção</span><span>${esc(report.platform||'sistema')} · ${esc(report.arch||'')}</span>`;
+  $('dependencies-list').innerHTML=items.length?items.map(item=>{
+    const [label,tone]=dependencyStatus[item.status]||[item.status,'missing'];
+    const active=item.id==='ai-memory'&&state.memory?.active?' <small>em uso pelo Office</small>':'';
+    const version=item.version?`<small class="dependency-version">${esc(item.version)}</small>`:'';
+    const command=item.actionCommand?`<div class="dependency-command"><code>${esc(item.actionCommand)}</code><button class="text-button" data-dependency-command="${esc(item.id)}">Copiar comando</button></div>`:'';
+    return `<article class="dependency-card"><header><div><h3>${esc(item.name)}${item.required?' <small>obrigatório</small>':''}${active}</h3><p>${esc(item.description)}</p></div><span class="dependency-status ${tone}">${label}</span></header>${version}<p class="dependency-note">${esc(item.note)}</p>${item.path?`<p class="dependency-path" title="${esc(item.path)}">${esc(item.path)}</p>`:''}${command}<a href="${esc(item.url)}" target="_blank" rel="noopener noreferrer">Documentação oficial ↗</a></article>`;
+  }).join(''):'<div class="empty-state"><h3>Diagnóstico ainda não carregado</h3><p>Atualize para verificar as ferramentas deste computador.</p></div>';
+}
+async function loadDependencies(){
+  if(dependenciesLoading)return;dependenciesLoading=true;renderDependencies();
+  try{
+    const response=await fetch('/api/dependencies',{method:'POST',headers:{'Content-Type':'application/json','X-Office-Token':token},body:'{}'});
+    const result=await response.json();if(!response.ok)throw new Error(result.error||'Não foi possível atualizar o diagnóstico.');
+    state={...state,dependencies:result};
+  }catch(error){toast(error.message);}finally{dependenciesLoading=false;renderDependencies();}
+}
+const mcpTargetLabel={claude:'Claude',codex:'Codex',bob:'IBM Bob'};
+function renderMcps(){
+  const target=$('mcp-list');if(!target)return;
+  const servers=state.mcps?.servers||[],allResults=state.mcps?.results||{},appliedAt=state.mcps?.appliedAt||{};
+  target.innerHTML=servers.length?servers.map(server=>{
+    const endpoint=server.transport==='http'?server.url:[server.command,...(server.args||[])].join(' ');
+    const results=allResults[server.name]||{};
+    const statuses=server.targets.map(provider=>{
+      const result=results[provider];
+      return `<span class="mcp-target ${result?result.ok?'ready':'failed':''}" title="${esc(result?.message||'Ainda não aplicado nesta sessão')}">${esc(mcpTargetLabel[provider])}${result?result.ok?' ✓':' !':''}</span>`;
+    }).join('');
+    const applied=appliedAt[server.name]?`Última aplicação: ${date(appliedAt[server.name])}`:'Ainda não aplicado pelo Office.';
+    const config=server.config||{},extra=[];
+    if(config.env)extra.push(`${Object.keys(config.env).length} env`);if(config.headers||config.http_headers)extra.push(`${Object.keys(config.headers||config.http_headers).length} header(s)`);if(config.cwd)extra.push('cwd');if(config.bearer_token_env_var)extra.push('token por variável');
+    return `<article class="mcp-card"><header><div><span class="eyebrow">${esc(server.transport.toUpperCase())}${extra.length?' · JSON AVANÇADO':''}</span><h3>${esc(server.name)}</h3></div><button class="button primary" data-mcp-apply="${esc(server.name)}" ${mcpApplying===server.name?'disabled':''}>${mcpApplying===server.name?'Aplicando…':'Aplicar nas IAs'}</button></header><code title="${esc(endpoint)}">${esc(endpoint)}</code>${extra.length?`<p class="mcp-config-summary">${esc(extra.join(' · '))}</p>`:''}<div class="mcp-target-list">${statuses}</div><p>${server.transport==='http'&&server.url.includes('127.0.0.1')?'Este servidor depende do Office estar aberto.':'A configuração é gravada no perfil do usuário de cada ferramenta.'}</p><footer><small>${esc(applied)}</small><span><button class="text-button" data-mcp-edit="${esc(server.name)}">Editar</button>${mcpPendingDelete===server.name?`<button class="text-button confirm-delete" data-mcp-confirm-remove="${esc(server.name)}">Confirmar remoção</button>`:`<button class="text-button" data-mcp-remove="${esc(server.name)}">Remover do catálogo</button>`}</span></footer></article>`;
+  }).join(''):'<div class="empty-state"><h3>Nenhum MCP cadastrado</h3><p>Adicione um servidor para compartilhá-lo entre as ferramentas.</p></div>';
+}
+function openMcpEditor(name=''){
+  const server=(state.mcps?.servers||[]).find(item=>item.name===name);mcpEditing=server?.name||'';$('mcp-form').reset();$('mcp-error').textContent='';
+  $('mcp-dialog-title').textContent=server?'Editar MCP':'Adicionar MCP';$('mcp-save').textContent=server?'Salvar alterações':'Salvar no catálogo';$('mcp-name').readOnly=!!server;
+  if(server){$('mcp-name').value=server.name;$('mcp-transport').value=server.transport;$('mcp-url').value=server.url||'';$('mcp-command').value=server.command||'';$('mcp-args').value=(server.args||[]).join('\n');$('mcp-json').value=JSON.stringify({name:server.name,...(server.config||{})},null,2);for(const input of document.querySelectorAll('input[name="mcp-target"]'))input.checked=server.targets.includes(input.value);}
+  else $('mcp-json').value='';
+  const basic=server?Object.keys(server.config||{}).every(key=>['type','url','command','args'].includes(key)):true;
+  setMcpMode(basic?'form':'json');toggleMcpFields();validateMcpJson();$('mcp-dialog').showModal();
+}
+async function mcpRequest(action,data){
+  if(!connected)throw new Error('O escritório está desconectado.');
+  const response=await fetch(`/api/mcps/${action}`,{method:'POST',headers:{'Content-Type':'application/json','X-Office-Token':token},body:JSON.stringify(data)});
+  const result=await response.json();if(!response.ok)throw new Error(result.error||'Não foi possível configurar o MCP.');
+  state={...state,mcps:result.mcps};renderMcps();return result;
+}
+function toggleMcpFields(){
+  const http=$('mcp-transport').value==='http';$('mcp-http-fields').hidden=!http;$('mcp-stdio-fields').hidden=http;
+  $('mcp-name').required=mcpMode==='form';$('mcp-url').required=mcpMode==='form'&&http;$('mcp-command').required=mcpMode==='form'&&!http;$('mcp-json').required=mcpMode==='json';
+}
+function setMcpMode(mode){
+  mcpMode=mode==='json'?'json':'form';$('mcp-form-fields').hidden=mcpMode!=='form';$('mcp-json-fields').hidden=mcpMode!=='json';
+  for(const button of document.querySelectorAll('[data-mcp-mode]')){const active=button.dataset.mcpMode===mcpMode;button.classList.toggle('active',active);button.setAttribute('aria-pressed',String(active));}
+  $('mcp-save').textContent=mcpMode==='json'?(mcpEditing?'Salvar JSON':'Importar JSON'):(mcpEditing?'Salvar alterações':'Salvar no catálogo');toggleMcpFields();
+}
+function mcpJsonNames(document){
+  if(!document||typeof document!=='object'||Array.isArray(document))throw new Error('O JSON precisa ser um objeto.');
+  const group=document.mcpServers&&typeof document.mcpServers==='object'?document.mcpServers:document.servers&&typeof document.servers==='object'?document.servers:null;
+  const names=group?Object.keys(group):document.name?[document.name]:[];if(!names.length)throw new Error('Informe "name" ou um bloco "mcpServers".');return names;
+}
+function validateMcpJson(){
+  if(mcpMode!=='json')return;const status=$('mcp-json-status'),value=$('mcp-json').value.trim();if(!value){status.className='mcp-json-status';status.textContent='Cole um JSON para validar.';return;}
+  try{const names=mcpJsonNames(JSON.parse(value));if(names.length>20)throw new Error('Importe no máximo 20 servidores por vez.');status.className='mcp-json-status valid';status.textContent=`JSON válido · ${names.length} servidor${names.length===1?'':'es'}: ${names.join(', ')}`;}
+  catch(error){status.className='mcp-json-status invalid';status.textContent=error.message;}
+}
+const skillStageLabels={intake:'Entrada',resolution:'Resolução',verification:'Verificação',release:'Entrega',improvement:'Melhoria',general:'Geral'};
+function skillOptions(name){
+  return (state.skills||[]).map(skill=>`<label class="skill-option compact"><input type="checkbox" name="${name}" value="${esc(skill.id)}"><span><strong>${esc(skill.name)} <em>${esc(skillStageLabels[skill.stage]||'Geral')}</em></strong><small>${esc(skill.description)}</small></span></label>`).join('');
+}
+function renderCapabilities(){
+  const overview=$('capability-overview');if(!overview)return;
+  const deps=state.dependencies?.items||[],ready=deps.filter(item=>item.status==='ready').length,total=deps.length;
+  const mcpCount=state.mcps?.servers?.length||0,skillCount=state.skills?.length||0,memory=state.memory?.active;
+  overview.innerHTML=`<article class="capability-card ${memory?'ready':'attention'}"><span>MEMÓRIA</span><strong>${memory?'Ativa':'Indisponível'}</strong><small>${esc(state.memory?.endpoint||'ai-memory não iniciado')}</small></article><article class="capability-card"><span>MCPS</span><strong>${mcpCount}</strong><small>servidor${mcpCount===1?'':'es'} no catálogo</small></article><article class="capability-card"><span>SKILLS</span><strong>${skillCount}</strong><small>disponíveis para todos os agentes</small></article><article class="capability-card ${total&&ready===total?'ready':''}"><span>AMBIENTE</span><strong>${ready}/${total}</strong><small>ferramentas prontas</small></article>`;
+  $('skills-count').textContent=`${skillCount} disponíveis`;
+  $('skills-catalog').innerHTML=skillCount?(state.skills||[]).map(skill=>`<article class="skill-card"><span>${esc(skillStageLabels[skill.stage]||'Geral')}</span><h3>${esc(skill.name)}</h3><code>${esc(skill.id)}</code><p>${esc(skill.description)}</p></article>`).join(''):'<div class="empty-state"><h3>Nenhuma skill carregada</h3><p>Confira a pasta de skills configurada no servidor.</p></div>';
 }
 function usageWindowLabel(minutes){
   if(minutes===300)return 'Janela de 5 horas';
@@ -198,6 +294,10 @@ function openMission(employee = 'team') {
   $('mission-employee').innerHTML = '<option value="team">Toda a equipe · planejamento até entrega</option>' + state.employees.map(e => `<option value="${e.id}">${e.name} · ${e.role}</option>`).join('');
   $('mission-employee').value = employee;
   $('mission-folder').textContent = `Pasta de trabalho: ${state.workspace}`;
+  const skills = Array.isArray(state.skills) ? state.skills : [];
+  $('mission-skills').hidden = !skills.length;
+  $('mission-skill-options').innerHTML = skillOptions('mission-skill');
+  document.querySelector('.workflow-preview').innerHTML='AUDITAR <span>→</span> PLANEJAR <span>→</span> IMPLEMENTAR <span>→</span> VERIFICAR <span>→</span> ENTREGAR <span>→</span> MELHORAR';
   $('mission-dialog').showModal();
 }
 function latestMeetingTasks() {
@@ -225,6 +325,7 @@ function openMeeting() {
   const selected = new Set(current.length ? current.map(task => task.employee) : state.employees.map(e => e.id));
   $('meeting-participants').innerHTML = state.employees.map(e => `<label style="--employee-color:${e.color}"><input type="checkbox" name="meeting-participant" value="${e.id}" ${selected.has(e.id) ? 'checked' : ''}><span>${e.initials}</span><b>${e.name}<small>${e.role}</small></b></label>`).join('');
   $('meeting-error').textContent = '';
+  $('meeting-skill-options').innerHTML=skillOptions('meeting-skill');
   renderMeetingHistory(true);
   $('meeting-dialog').showModal();
 }
@@ -282,6 +383,7 @@ function openEmployee(id) {
   pendingAttachments = [];
   $('employee-files').value = '';
   renderAttachmentDrafts();
+  $('chat-skill-options').innerHTML=skillOptions('chat-skill');
   renderEmployeeChat(true);
   $('employee-dialog').showModal();
   requestAnimationFrame(() => $('employee-message').focus());
@@ -297,7 +399,7 @@ function renderTask() {
   const task = state.tasks.find(t => t.id === selectedTask); if (!task) return;
   $('task-title').textContent = `${task.name} · ${task.role}`;
   $('task-provider').textContent = `${labels[task.provider]} / ${statuses[task.status]}${task.denied ? ' · uma ferramenta foi negada' : ''}`;
-  $('task-meta').textContent = `${date(task.createdAt)} · ${task.workspace}`;
+  $('task-meta').innerHTML = `${esc(date(task.createdAt))} · ${esc(task.workspace)}${task.skills?.length?`<span class="task-skill-tags">${task.skills.map(skill=>`<small>${esc(skill)}</small>`).join('')}</span>`:''}`;
   $('task-brief').textContent = task.prompt;
   const terminal = $('task-output');
   const nearBottom = terminal.scrollHeight - terminal.scrollTop - terminal.clientHeight < 70;
@@ -389,7 +491,7 @@ async function buildPlanFrom(origin, { button, errorField, label, dialog }) {
     const response = await fetch('/api/plan', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Office-Token': token }, body: JSON.stringify(origin) });
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || 'Não foi possível montar o plano.');
-    planDraft = result.plan; planMission = result.mission; planEmployee = result.employee; planBackground = result.background || '';
+    planDraft = result.plan; planMission = result.mission; planEmployee = result.employee; planBackground = result.background || ''; planSkills = result.skills || [];
     $(dialog).close(); $('plan-error').textContent = ''; renderPlan(); $('plan-dialog').showModal();
   } catch (error) { $(errorField).textContent = error.message; }
   finally { button.disabled = false; button.textContent = label || original; }
@@ -408,7 +510,7 @@ async function delegateFromChat() {
 async function confirmPlan() {
   planCollect(); $('plan-error').textContent = '';
   const button = $('plan-confirm'); button.disabled = true;
-  try { await api('plan/confirm', { mission: planMission, employee: planEmployee, background: planBackground, plan: planDraft }); $('plan-dialog').close(); planDraft = null; switchView('tasks'); toast('Plano distribuído. Cada funcionário foi para a mesa dele.'); }
+  try { await api('plan/confirm', { mission: planMission, employee: planEmployee, background: planBackground, skills: planSkills, plan: planDraft }); $('plan-dialog').close(); planDraft = null; planSkills = []; switchView('tasks'); toast('Plano distribuído. Cada funcionário foi para a mesa dele.'); }
   catch (error) { $('plan-error').textContent = error.message; }
   finally { button.disabled = false; }
 }
@@ -520,7 +622,8 @@ function render() {
     const tasks = state.tasks.filter(t => t.mission === id), first = tasks[0];
     const unfinished = tasks.some(t => ['queued', 'running'].includes(t.status));
     const closed = (state.finished || []).includes(id);
-    return `<article class="mission-card"><h3>${first.standup ? 'Alinhamento automático de fim de missão' : esc(first.prompt.slice(0, 240))}</h3><div class="mission-info">${date(first.createdAt)} · ${tasks.filter(t => t.status === 'done').length}/${tasks.length} etapas concluídas${closed ? ' · encerrada' : ''} · ${esc(first.workspace)}</div><div class="stages">${tasks.map((t, i) => `<button class="stage ${t.status}" data-task="${t.id}"><strong>${t.meeting ? '\u25ce' : `${i + 1}.`} ${t.name}</strong><small>${waitingFor(t) || statuses[t.status]}${t.denied ? ' ⚠' : ''}</small></button>`).join('')}</div><div class="mission-controls"><button class="text-button" data-export="${id}">↓ Exportar</button>${closed ? '' : `<button class="text-button" data-finish="${id}">Encerrar demanda</button>`}${unfinished ? '' : `<button class="text-button" data-archive="${id}">Arquivar</button>`}${unfinished ? '' : pendingDelete === id ? `<button class="text-button confirm-delete" data-delete="${id}">Confirmar exclusão</button>` : `<button class="text-button" data-arm-delete="${id}">Apagar</button>`}</div></article>`;
+    const skills=[...new Set(tasks.flatMap(task=>task.skills||[]))];
+    return `<article class="mission-card"><h3>${first.standup ? 'Alinhamento automático de fim de missão' : esc(first.prompt.slice(0, 240))}</h3><div class="mission-info">${date(first.createdAt)} · ${tasks.filter(t => t.status === 'done').length}/${tasks.length} etapas concluídas${closed ? ' · encerrada' : ''} · ${esc(first.workspace)}</div>${skills.length?`<div class="mission-skill-tags">${skills.map(skill=>`<span>${esc(skill)}</span>`).join('')}</div>`:''}<div class="stages">${tasks.map((t, i) => `<button class="stage ${t.status}" data-task="${t.id}"><strong>${t.meeting ? '\u25ce' : `${i + 1}.`} ${t.name}</strong><small>${waitingFor(t) || statuses[t.status]}${t.denied ? ' ⚠' : ''}</small></button>`).join('')}</div><div class="mission-controls"><button class="text-button" data-export="${id}">↓ Exportar</button>${closed ? '' : `<button class="text-button" data-finish="${id}">Encerrar demanda</button>`}${unfinished ? '' : `<button class="text-button" data-archive="${id}">Arquivar</button>`}${unfinished ? '' : pendingDelete === id ? `<button class="text-button confirm-delete" data-delete="${id}">Confirmar exclusão</button>` : `<button class="text-button" data-arm-delete="${id}">Apagar</button>`}</div></article>`;
   }).join('') : '<div class="empty-state"><h3>O que vamos construir?</h3><p>Conte a ideia ao time ou atribua uma tarefa a um funcionário.<br>As etapas e os resultados ficam registrados aqui.</p><button class="button primary" data-action="mission">＋ Nova missão</button></div>';
   try { office3d?.update(sceneData()); }
   catch (error) { office3d = null; sceneAvailability(false, `A cena 3D parou por um erro (${error.message || error}). ${fallbackHelp}`); }
@@ -530,6 +633,9 @@ function render() {
   renderBriefing();
   if ($('settings-dialog').open) renderAgentUsage();
   if ($('mural-dialog').open) renderMural();
+  renderDependencies();
+  renderMcps();
+  renderCapabilities();
 }
 function download(tasks, filename) {
   const text = tasks.map(t => `# ${t.name} — ${t.role}\n\nTerminal: ${labels[t.provider]}\nStatus: ${statuses[t.status]}\nPasta: ${t.workspace}\n\n## Pedido\n${t.prompt}\n\n## Resultado / saída\n${t.output || '(sem saída)'}\n`).join('\n---\n\n');
@@ -569,12 +675,29 @@ document.addEventListener('click', async event => {
   if (button.id === 'attach-files') $('employee-files').click();
   if (button.dataset.removeAttachment !== undefined) { pendingAttachments.splice(Number(button.dataset.removeAttachment), 1); renderAttachmentDrafts(); }
   if (button.dataset.close) $(button.dataset.close).close();
-  if (button.dataset.view) switchView(button.dataset.view);
+  if (button.dataset.view) { switchView(button.dataset.view); if(button.dataset.view==='tools') void loadDependencies(); }
   if (button.dataset.camera) office3d?.camera(button.dataset.camera);
   if (button.dataset.employee) openEmployee(button.dataset.employee);
   if (button.dataset.task) openTask(button.dataset.task);
   if (button.dataset.action === 'settings') openSettings();
   if (button.id === 'usage-refresh') await loadAgentUsage();
+  if (button.id === 'dependencies-refresh') await loadDependencies();
+  if(button.id==='mcp-add')openMcpEditor();
+  if(button.dataset.mcpEdit)openMcpEditor(button.dataset.mcpEdit);
+  if(button.dataset.mcpRemove){mcpPendingDelete=button.dataset.mcpRemove;renderMcps();}
+  if(button.dataset.mcpConfirmRemove){
+    try{await mcpRequest('remove',{name:button.dataset.mcpConfirmRemove});mcpPendingDelete='';toast('MCP removido do catálogo. Configurações já aplicadas nas IAs foram preservadas.');}
+    catch(error){toast(error.message);}
+  }
+  if(button.dataset.mcpApply){
+    mcpApplying=button.dataset.mcpApply;renderMcps();
+    try{const result=await mcpRequest('apply',{name:mcpApplying});const failed=Object.values(result.results||{}).filter(item=>!item.ok);toast(failed.length?`MCP aplicado com ${failed.length} pendência(s). Consulte os indicadores.`:'MCP configurado. Reinicie os terminais que já estavam abertos.');}
+    catch(error){toast(error.message);}finally{mcpApplying='';renderMcps();}
+  }
+  if (button.dataset.dependencyCommand) {
+    const item=state.dependencies?.items?.find(entry=>entry.id===button.dataset.dependencyCommand);
+    if(item?.actionCommand){try{await navigator.clipboard.writeText(item.actionCommand);toast('Comando copiado. Revise antes de executar.');}catch{toast('Não foi possível copiar automaticamente. Selecione o comando exibido.');}}
+  }
   if (button.id === 'close-meeting') await closeMeeting();
   if (button.id === 'leave-meeting') await leaveMeeting();
   if (button.id === 'delegate-chat') await delegateFromChat();
@@ -658,7 +781,8 @@ for (const id of ['mission-form', 'settings-form']) $(id).addEventListener('subm
       const assignments = Object.fromEntries(state.employees.map(e => [e.id, $(`assignment-${e.id}`).value]));
       await api('config', { workspace: $('workspace-path').value.trim(), assignments, standup: $('standup-toggle').checked }); $('settings-dialog').close(); toast('Escritório configurado. Seu time está pronto.');
     } else {
-      await api('missions', { employee: $('mission-employee').value, prompt: $('mission-prompt').value }); $('mission-dialog').close(); $('mission-prompt').value = ''; toast('Missão enviada para a equipe.');
+      const skills = [...document.querySelectorAll('input[name="mission-skill"]:checked')].map(input => input.value);
+      await api('missions', { employee: $('mission-employee').value, prompt: $('mission-prompt').value, skills }); $('mission-dialog').close(); $('mission-prompt').value = ''; toast('Missão enviada para a equipe.');
     }
   } catch (error) { $(errorId).textContent = error.message; }
   finally { button.disabled = false; }
@@ -676,7 +800,8 @@ $('employee-chat-form').addEventListener('submit', async event => {
   button.disabled = true;
   try {
     const attachments = await Promise.all(pendingAttachments.map(encodeFile));
-    await api('missions', { employee: selectedEmployee, prompt: prompt || 'Analise os arquivos anexados e use-os como contexto.', attachments });
+    const skills=[...document.querySelectorAll('input[name="chat-skill"]:checked')].map(item=>item.value);
+    await api('missions', { employee: selectedEmployee, prompt: prompt || 'Analise os arquivos anexados e use-os como contexto.', attachments, skills });
     input.value = '';
     pendingAttachments = [];
     $('employee-files').value = '';
@@ -713,12 +838,40 @@ $('meeting-form').addEventListener('submit', async event => {
   if (!state.workspace) { $('meeting-dialog').close(); openSettings(); toast('Escolha primeiro a pasta do projeto.'); return; }
   button.disabled = true;
   try {
-    await api('missions', { participants, prompt });
+    const skills=[...document.querySelectorAll('input[name="meeting-skill"]:checked')].map(item=>item.value);
+    await api('missions', { participants, prompt, skills });
     $('meeting-prompt').value = '';
     renderMeetingHistory(true);
     toast('A reunião começou. Os participantes já estão na mesa.');
   } catch (error) { $('meeting-error').textContent = error.message; }
   finally { button.disabled = false; }
+});
+$('mcp-transport').addEventListener('change',toggleMcpFields);
+for(const button of document.querySelectorAll('[data-mcp-mode]'))button.addEventListener('click',()=>setMcpMode(button.dataset.mcpMode));
+$('mcp-json').addEventListener('input',validateMcpJson);
+$('mcp-json-example').addEventListener('click',()=>{
+  $('mcp-json').value=JSON.stringify({mcpServers:{opensearch:{type:'stdio',command:'uvx',args:['opensearch-mcp-server-py'],env:{OPENSEARCH_URL:'${OPENSEARCH_URL}',OPENSEARCH_USERNAME:'${OPENSEARCH_USERNAME}',OPENSEARCH_PASSWORD:'${OPENSEARCH_PASSWORD}'}}}},null,2);validateMcpJson();
+});
+document.addEventListener('change',event=>{
+  if(!['mission-skill','meeting-skill','chat-skill'].includes(event.target?.name)||!event.target.checked)return;
+  const selected=[...document.querySelectorAll(`input[name="${event.target.name}"]:checked`)];
+  if(selected.length>4){event.target.checked=false;toast('Escolha no máximo 4 skills por missão.');}
+});
+$('mcp-form').addEventListener('submit',async event=>{
+  event.preventDefault();const button=event.submitter;$('mcp-error').textContent='';button.disabled=true;
+  const targets=[...document.querySelectorAll('input[name="mcp-target"]:checked')].map(input=>input.value);
+  try{
+    if(mcpMode==='json'){
+      const json=$('mcp-json').value.trim(),names=mcpJsonNames(JSON.parse(json));
+      if(mcpEditing&&(names.length!==1||names[0]!==mcpEditing))throw new Error(`Ao editar, mantenha o nome "${mcpEditing}". Para importar outro servidor, abra um novo cadastro.`);
+      const result=await mcpRequest('import',{json,targets});$('mcp-dialog').close();mcpEditing='';toast(`${result.imported.length} MCP${result.imported.length===1?'':'s'} salvo${result.imported.length===1?'':'s'} no catálogo.`);
+    }else{
+      const transport=$('mcp-transport').value,server={name:$('mcp-name').value.trim(),transport,targets};
+      if(transport==='http')server.url=$('mcp-url').value.trim();else{server.command=$('mcp-command').value.trim();server.args=$('mcp-args').value.split(/\r?\n/).map(value=>value.trim()).filter(Boolean);}
+      await mcpRequest('save',{server});$('mcp-dialog').close();mcpEditing='';toast('MCP salvo. Use “Aplicar nas IAs” para configurar os perfis selecionados.');
+    }
+  }
+  catch(error){$('mcp-error').textContent=error.message;}finally{button.disabled=false;}
 });
 function connectionStatus(ok) { connected = ok; $('connection').textContent = ok ? '● Conectado localmente' : '○ Escritório desconectado'; $('connection').style.color = ok ? '#a7cdb1' : '#efb3a7'; }
 async function connect() {

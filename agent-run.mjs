@@ -3,6 +3,7 @@ import {promises as fs} from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {commandFor,decodeLine} from './adapters.mjs';
+import {spawnTarget} from './process-spawn.mjs';
 
 /* Pergunta avulsa a um funcionário, fora da fila de missões: roda o terminal dele em uma pasta vazia e
    devolve o texto da resposta. Pasta vazia porque estas perguntas são de raciocínio — nada deve ser lido
@@ -13,7 +14,8 @@ export async function runAgent({provider,binary,prompt,timeoutMs=120000,limit=20
   const command=commandFor(provider,directory,prompt);
   try{
     return await new Promise((resolve,reject)=>{
-      const child=spawn(binary,command.args,{cwd:directory,env:{...process.env,NO_COLOR:'1'},shell:false,detached:true,stdio:['pipe','pipe','pipe']});
+      const target=spawnTarget(binary,command.args);
+      const child=spawn(target.binary,target.args,{cwd:directory,env:{...process.env,NO_COLOR:'1'},shell:false,detached:true,stdio:['pipe','pipe','pipe']});
       let result='',output='',buffer='',failure=false,total=0,settled=false,killTimer;
       const kill=()=>{try{process.kill(-child.pid,'SIGTERM');}catch{child.kill('SIGTERM');}killTimer=setTimeout(()=>{try{process.kill(-child.pid,'SIGKILL');}catch{}},1500);killTimer.unref();};
       const finish=(error,value)=>{if(settled)return;settled=true;clearTimeout(timer);signal?.removeEventListener('abort',abort);error?reject(error):resolve(value);};

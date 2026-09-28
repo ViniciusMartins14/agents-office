@@ -7,6 +7,7 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import http from 'node:http';
 import { commandFor, decodeLine, buildPrompt, briefingText, employees } from '../adapters.mjs';
+import {spawnTarget} from '../process-spawn.mjs';
 
 test('Adaptadores mantêm prompts como dados e sinalizam falhas e permissões', () => {
   const injection = 'pedido; touch /tmp/nao-executar $(id)';
@@ -61,6 +62,8 @@ test('Adaptadores mantêm prompts como dados e sinalizam falhas e permissões', 
   assert.match(followUp, /primeira pergunta/);
   assert.match(followUp, /primeira resposta/);
   assert.match(followUp, /\/tmp\/dados\.xlsx/);
+  assert.deepEqual(spawnTarget('C:\\temp\\fixture', ['--flag'], {platform:'win32',node:'node.exe'}),{binary:'node.exe',args:['C:\\temp\\fixture','--flag']});
+  assert.deepEqual(spawnTarget('/tmp/fixture', ['--flag'], {platform:'linux',node:'node'}),{binary:'/tmp/fixture',args:['--flag']});
 });
 
 test('Servidor: proteção local, passagem de contexto, falha, retomada, cancelamento e histórico', { timeout: 30000 }, async () => {
@@ -86,6 +89,7 @@ test('Servidor: proteção local, passagem de contexto, falha, retomada, cancela
   async function waitFor(predicate) { for(let i=0;i<120;i++){ const s=await read(); if(predicate(s)) return s; await new Promise(r=>setTimeout(r,50)); } throw new Error('Estado esperado não chegou: ' + JSON.stringify((await read()).tasks.map(t=>({status:t.status,output:t.output})))); }
   try {
     token = await boot();
+    assert.ok((await read()).skills.some(skill=>skill.id==='evidence-review'));
     assert.equal((await post('pause',{paused:true},{Origin:'https://externo.example'})).status,403);
     assert.equal((await post('pause',{paused:true},{'X-Office-Token':'errado'})).status,403);
     assert.equal((await fetch(`${origin}/.office/state.json`)).status,404);
@@ -139,9 +143,11 @@ test('Servidor: proteção local, passagem de contexto, falha, retomada, cancela
     const assignments={manager:'claude',architect:'claude',frontend:'codex',backend:'codex',qa:'bob',delivery:'bob'};
     assert.equal((await post('config',{workspace:'relativo',assignments,standup:false})).status,400);
     assert.equal((await post('config',{workspace:temp,assignments,standup:false})).status,200);
+    assert.equal((await post('missions',{employee:'frontend',prompt:'Pedido com uma skill ausente.',skills:['nao-existe']})).status,400);
     await post('pause',{paused:true});
-    await post('missions',{employee:'team',prompt:'Construa um teste de integração.'});
+    await post('missions',{employee:'team',prompt:'Construa um teste de integração.',skills:['evidence-review']});
     assert.equal((await read()).tasks.filter(t=>t.status==='queued').length,6);
+    assert.ok((await read()).tasks.every(t=>t.skills?.includes('evidence-review')));
     await post('pause',{paused:false});
     let s=await waitFor(s=>s.tasks.every(t=>t.status==='done'));
     assert.equal(s.tasks[0].result,'primeira etapa');
@@ -296,5 +302,13 @@ test('Servidor: proteção local, passagem de contexto, falha, retomada, cancela
     await stop(); token=await boot();
     s=await read(); assert.equal(s.tasks.at(-1).status,'interrupted');
     assert.equal(s.tasks.filter(t=>t.status==='done').length,36);
-  } finally { if(child && child.exitCode===null) await stop(); await fs.rm(temp,{recursive:true,force:true}); }
+  } finally {
+    if(child && child.exitCode===null) await stop();
+    try { await fs.rm(temp,{recursive:true,force:true,maxRetries:10,retryDelay:100}); }
+    catch(error) {
+      /* Antivírus/indexadores do Windows podem segurar o diretório temporário depois que todos os filhos
+         encerraram. Isso não invalida a integração; outros sistemas e erros diferentes continuam falhando. */
+      if(process.platform!=='win32'||error.code!=='EBUSY')throw error;
+    }
+  }
 });

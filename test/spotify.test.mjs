@@ -23,7 +23,7 @@ test('PKCE vincula autorização ao navegador, impede replay e não expõe crede
  await s.callback(query,start.cookie);
  assert.ok(exchanged.body.get('code_verifier'));assert.equal(s.info().connected,true);
  assert.ok(!JSON.stringify(s.info()).includes('private'));
- assert.equal((await fs.stat(s.file)).mode&0o777,0o600);
+ if(process.platform!=='win32')assert.equal((await fs.stat(s.file)).mode&0o777,0o600);
  await assert.rejects(s.callback(query,start.cookie),/expirou/);
  await s.disconnect();assert.equal(s.info().connected,false);await assert.rejects(fs.stat(s.file),{code:'ENOENT'});
 });
